@@ -1,0 +1,176 @@
+name: 'Test'
+
+env:
+  TERRAFORM_VERSION: '1.8.5'
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform-format:
+    name: Terraform Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Check Terraform formatting
+        id: fmt-check
+        run: |
+          if ! terraform fmt -recursive -check .; then
+            echo "needs-formatting=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Terraform files need formatting"
+          else
+            echo "needs-formatting=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Terraform files are properly formatted"
+          fi
+
+      - name: Apply Terraform formatting
+        if: steps.fmt-check.outputs.needs-formatting == 'true'
+        run: terraform fmt -recursive .
+
+      - name: Commit and push formatted files
+        if: steps.fmt-check.outputs.needs-formatting == 'true'
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add -A
+          git commit -m "style: format terraform files [skip ci]"
+          git push origin HEAD:${{ github.head_ref }}
+          echo "::notice::Terraform files formatted and committed"
+
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Initialize Terraform
+        run: |
+          terraform init -backend=false
+          echo "::notice::Terraform initialized successfully (backend disabled for validation)"
+
+      - name: Validate Terraform configuration
+        run: |
+          if terraform validate; then
+            echo "::notice::✓ Terraform configuration is valid"
+          else
+            echo "::error::✗ Terraform configuration validation failed"
+            exit 1
+          fi
+
+  terraform-lint:
+    name: Terraform Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: Initialize TFLint
+        run: |
+          tflint --init
+          echo "::notice::TFLint initialized successfully"
+
+      - name: Run TFLint
+        run: |
+          if tflint --format=compact; then
+            echo "::notice::✓ TFLint checks passed"
+          else
+            echo "::error::✗ TFLint found issues in Terraform code"
+            exit 1
+          fi
+
+  summary:
+    name: Test Summary
+    needs: [terraform-format, terraform-validate, terraform-lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Evaluate test results
+        run: |
+          fmt="${{ needs.terraform-format.result }}"
+          validate="${{ needs.terraform-validate.result }}"
+          lint="${{ needs.terraform-lint.result }}"
+          
+          echo "## Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          failed=0
+          
+          if [ "$fmt" = "success" ]; then
+            echo "✓ **Format**: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✗ **Format**: Failed ($fmt)" >> $GITHUB_STEP_SUMMARY
+            echo "::error::Terraform format check failed (result: $fmt)"
+            failed=1
+          fi
+          
+          if [ "$validate" = "success" ]; then
+            echo "✓ **Validate**: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✗ **Validate**: Failed ($validate)" >> $GITHUB_STEP_SUMMARY
+            echo "::error::Terraform validation failed (result: $validate)"
+            failed=1
+          fi
+          
+          if [ "$lint" = "success" ]; then
+            echo "✓ **Lint**: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✗ **Lint**: Failed ($lint)" >> $GITHUB_STEP_SUMMARY
+            echo "::error::Terraform lint check failed (result: $lint)"
+            failed=1
+          fi
+          
+          if [ $failed -eq 1 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Overall Result**: Failed" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Overall Result**: All checks passed" >> $GITHUB_STEP_SUMMARY
+            echo "::notice::✓ All Terraform checks succeeded"
+          fi

@@ -1,0 +1,151 @@
+name: 'Release'
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+    branches:
+      - main
+  pull_request_target:
+    types: [closed]
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-release-title:
+    name: Validate Release Title Format
+    if: github.event.action != 'closed' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Validate release type in PR title
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          
+          if [[ ! "$TITLE" =~ ^\[(MAJOR|MINOR|PATCH)\] ]]; then
+            echo "::error::PR title must start with [MAJOR], [MINOR], or [PATCH]"
+            echo "::error::Examples:"
+            echo "::error::  [MAJOR] Breaking: Remove deprecated API"
+            echo "::error::  [MINOR] Feature: Add new resource"
+            echo "::error::  [PATCH] Fix: Correct validation logic"
+            exit 1
+          fi
+          echo "::notice::✓ Valid release title format: $TITLE"
+
+
+  release:
+    name: Create Release
+    needs: validate-release-title
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.new-version.outputs.new-version }}
+      skipped: ${{ steps.new-version.outputs.skip }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine release type
+        id: release-type
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          RELEASE_TYPE=""
+          
+          if [[ "$TITLE" =~ \[MAJOR\] ]]; then
+            RELEASE_TYPE="major"
+          elif [[ "$TITLE" =~ \[MINOR\] ]]; then
+            RELEASE_TYPE="minor"
+          elif [[ "$TITLE" =~ \[PATCH\] ]]; then
+            RELEASE_TYPE="patch"
+          fi
+          
+          echo "release-type=$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
+          echo "::notice::Detected release type from title: $RELEASE_TYPE"
+
+      - name: Get current version
+        id: current-version
+        run: |
+          LATEST_TAG=$(git tag -l 'v*' --sort=-version:refname | head -n 1)
+          VERSION=${LATEST_TAG#v}
+          VERSION=${VERSION:-0.0.0}
+          echo "current-version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "::notice::Current version: v$VERSION"
+
+      - name: Calculate new version
+        id: new-version
+        run: |
+          RELEASE_TYPE="${{ steps.release-type.outputs.release-type }}"
+          
+          if [ -z "$RELEASE_TYPE" ]; then
+            echo "::warning::No release type found in PR title. Skipping release creation."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          
+          CURRENT="${{ steps.current-version.outputs.current-version }}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          
+          case "$RELEASE_TYPE" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+          
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "new-version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "::notice::✓ Version bump: v$CURRENT → v$NEW_VERSION ($RELEASE_TYPE)"
+
+      - name: Configure Git
+        if: steps.new-version.outputs.skip != 'true'
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check if tag already exists
+        if: steps.new-version.outputs.skip != 'true'
+        id: check-tag
+        run: |
+          TAG="v${{ steps.new-version.outputs.new-version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists"
+            exit 1
+          fi
+          echo "::notice::Tag $TAG does not exist, proceeding with release"
+
+      - name: Create and push git tag
+        if: steps.new-version.outputs.skip != 'true'
+        run: |
+          TAG="v${{ steps.new-version.outputs.new-version }}"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "::notice::Created and pushed tag: $TAG"
+
+      - name: Create GitHub Release
+        if: steps.new-version.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          retries: 3
+          script: |
+            const response = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: 'v${{ steps.new-version.outputs.new-version }}',
+              name: 'v${{ steps.new-version.outputs.new-version }}',
+              draft: false,
+              prerelease: false,
+              generate_release_notes: true
+            });
+            core.notice(`Release created: ${response.data.html_url}`);
