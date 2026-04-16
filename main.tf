@@ -12,6 +12,7 @@ resource "azurerm_mssql_managed_instance" "sqlmi" {
   collation                      = var.collation
   database_format                = var.database_format
   dns_zone_partner_id            = var.dns_zone_partner_id
+  general_purpose_v2_enabled     = var.general_purpose_v2_enabled
   hybrid_secondary_usage         = var.hybrid_secondary_usage
   maintenance_configuration_name = var.maintenance_configuration_name
   minimum_tls_version            = var.minimum_tls_version

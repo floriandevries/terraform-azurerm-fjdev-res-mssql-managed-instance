@@ -116,6 +116,15 @@ variable "dns_zone_partner_id" {
   description = "The ID of the SQL Managed Instance which will share the DNS zone. This is a prerequisite for creating an `azurerm_sql_managed_instance_failover_group`. Setting this after creation forces a new resource to be created."
 }
 
+variable "general_purpose_v2_enabled" {
+  type        = bool
+  default     = false
+  description = <<DESCRIPTION
+Specifies whether the SQL Managed Instance should use the Next-gen General Purpose service tier.
+> Note: The `general_purpose_v2_enabled` property can only be set to true when using a General Purpose (`GP_*`) SKU.
+DESCRIPTION
+}
+
 variable "hybrid_secondary_usage" {
   type        = string
   default     = "Active"
