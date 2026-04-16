@@ -69,6 +69,7 @@ variable "administrator_login_password" {
 The password associated with the administrator_login user. Needs to comply with Azure's [Password Policy](https://msdn.microsoft.com/library/ms161959.aspx).
 > Note: Unless `azure_active_directory_administrator.azuread_authentication_only_enabled` is set to `true`, `administrator_login` and `administrator_login_password` are required.
 DESCRIPTION
+  sensitive   = true
 }
 
 variable "azure_active_directory_administrator" {
